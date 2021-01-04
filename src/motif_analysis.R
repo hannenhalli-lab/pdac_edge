@@ -65,7 +65,6 @@ get_motif_score_thresh <- function( pwm_file_name, motif_p_value_thresh ) {
 }
 
 create_motif_score_thresh_table <- function( pwm_list, motif_p_value_thresh ) {
-
     tf_names <- names(pwm_list)
     motif_p_value_dt <- data.table( tf=tf_names, score_thresh=-1 )
     score_thresh_vec <- c()
@@ -118,14 +117,14 @@ pwm_scan <- function( pwm_list, foreground_granges_obj, background_granges_obj=N
     set.seed(364002204)
 
     foreground_sequences <- getSeq( genome, foreground_granges_obj )
-    names(foreground_sequences) <- paste0("seq_", seq_along(foreground_sequences))
+    names(foreground_sequences) <- foreground_granges_obj$SYMBOL#paste0("seq_", seq_along(foreground_sequences))
     writeXStringSet( foreground_sequences, "fg.fa")
     num_fg_sequences <- length(foreground_sequences)
 
     if (do_enrichment) {
         if (!is.null(background_granges_obj)) {
             background_sequences <- getSeq( genome, background_granges_obj )
-            names(background_sequences) <- paste0("seq_", seq_along(background_sequences))
+            names(background_sequences) <- background_granges_obj$SYMBOL#paste0("seq_", seq_along(background_sequences))
         } else {
             background_sequences <- shuffle_sequences( foreground_sequences, method="euler", k=2)
         }
