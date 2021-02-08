@@ -719,6 +719,7 @@ process_progenitor_data <- function() {
     progenitor_count_mat <- read_gene_exp_mat(file.path(base_path,"GSM4194789_TMM_counts_CPM.csv.gz"))
 
     progenitor_seurat_obj <- CreateSeuratObject( progenitor_count_mat )
+
     progenitor_seurat_obj[["percent.mt"]] <- PercentageFeatureSet(progenitor_seurat_obj, pattern = "^MT-")
     dying_cells <- WhichCells( progenitor_seurat_obj, expression='percent.mt > 10' )
     
