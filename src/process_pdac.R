@@ -9,54 +9,12 @@ library(parallel)
 library(parallelDist)
 library(robustbase)
 
-self_pca_distances <- function( cells, self_pca_df ) {
-    self_normal_dist_mat <- as.matrix(parDist(as.matrix(self_pca_df, dimnames=list(cells,cells))))
-    medoid <- which.min(rowSums(self_normal_dist_mat))
-    self_dist_from_medoid <- self_normal_dist_mat[,medoid]
-
-    return( list("dist_from_medoid"=self_dist_from_medoid,"medoid"=names(medoid)) )
-}
-
-annotate_normal_edge_cells <- function( malignant_cells, normal_cells, gene_exp_df, normal_cell_type, malignant_cell_type, edge_cell_fraction=0.1, distance="euclidean", self_gene_exp_df=NULL ) {
-    all_cells <- c(normal_cells,malignant_cells)
-    subset_gene_exp_df <- gene_exp_df[rownames(gene_exp_df) %in% all_cells,]
-    dist_mat <- as.matrix(parDist(as.matrix(subset_gene_exp_df,dimnames=list(all_cells,all_cells)),method=distance))
-
-    ret <- self_pca_distances( normal_cells, self_gene_exp_df )
-    self_dist_normal_from_normal_medoid <- ret$dist_from_medoid
-    edge_dist_threshold <- quantile( self_dist_normal_from_normal_medoid, 1 - edge_cell_fraction )
-    edge_cell_mask <- self_dist_normal_from_normal_medoid > edge_dist_threshold
-    cell_category_labels <- rep( "center", length(normal_cells) )
-    cell_category_labels[edge_cell_mask] <- "edge"
-
-    combined_normal_cells_anno_dt <- data.table()
-    mean_dist_normal_to_malignant <- rowMeans(dist_mat[normal_cells,malignant_cells])
-
-    malignant_only_dist_mat <- dist_mat[malignant_cells,malignant_cells]
-    normal_only_dist_mat <- dist_mat[normal_cells,normal_cells]
-    malignant_medoid <- which.min(rowSums(malignant_only_dist_mat))
-    normal_medoid <- which.min(rowSums(normal_only_dist_mat))
-    dist_normal_from_malignant_medoid <- dist_mat[normal_cells,malignant_medoid]
-    dist_normal_from_all_malignant <- rowMeans(dist_mat[normal_cells,malignant_cells])
-
-    control_idx <- 1
-    normal_cells_anno_dt <- data.table()
-
-    dist_normal_from_normal_medoid <- normal_only_dist_mat[,normal_medoid]
-
-    #closer_to_mal_mask <- dist_normal_from_malignant_medoid < mal_dist_threshold
-    #$farther_from_mal_mask <- !closer_to_mal_mask 
-
-    new_dt <- data.table( dist_from_normal_medoid=dist_normal_from_normal_medoid,
-    dist_from_malignant_medoid=dist_normal_from_malignant_medoid, cell.name=normal_cells,
-    cell_category=cell_category_labels,dist_normal_from_all_malignant=dist_normal_from_all_malignant )
-    new_dt$self_dist_from_normal_medoid <- self_dist_normal_from_normal_medoid
-
-    normal_cells_anno_dt <- rbind( normal_cells_anno_dt, new_dt )
-
-    return( normal_cells_anno_dt )
-}
-
+########## Basic Seurat processing functions###############
+"
+Input : Path to a read count matrix (genes along rows and cells along columns, with the first column being the gene
+name).
+Output : A dense matrix of dimensions (# genes x # cells), with the rows indexed by gene name. 
+"
 read_gene_exp_mat <- function( matrix_path ) {
     #fread will throw a warning that the number of columns it calculated does not match up
     #with the number of columns in line 2. This is because the header is missing a gene name column for
@@ -77,22 +35,12 @@ read_gene_exp_mat <- function( matrix_path ) {
     #pdac_normal_mat <- pdac_normal_mat[nonzero_counts > min_expression,1:ncol(pdac_normal_mat)]
 }
 
-create_cell_type_list <- function( anno_dt, normal_cell_types_list, malignant_cell_types_list, cell_types_to_exclude_list ) {
-    cell_type_list = c()
-    if (normal_cell_types_list[1] == "all" && length(normal_cell_types_list) == 1)  {
-        normal_cell_types_list = unique(anno_dt$cluster)
-    }
-
-    if (malignant_cell_types_list[1] == "all" && length(malignant_cell_types_list) == 1)  {
-        malignant_cell_types_list = unique(anno_dt$cluster)
-    }
-
-    cell_type_list = unique( c(normal_cell_types_list, malignant_cell_types_list ) )
-    cell_type_list = setdiff( cell_type_list, cell_types_to_exclude_list )
-
-    return (cell_type_list)
-}
-
+"
+Returns a Seurat object given a read count matrix and an annotation file
+Inputs : 
+gene_exp_matrix <- A read count matrix of dimensions # of genes x # of cells.
+anno_dt <- A data.table containing one cell per row, along with a cell type label. 
+"
 create_full_seurat_object <- function( gene_exp_matrix, anno_dt=NULL ) {
     if (!is.null(anno_dt)) {
         anno_df <- as.data.frame(anno_dt[,!c("cell.name")])
@@ -105,22 +53,11 @@ create_full_seurat_object <- function( gene_exp_matrix, anno_dt=NULL ) {
     return (main_pdac_obj)
 }
 
-process_subset_with_seurat <- function( main_pdac_obj, anno_dt, cell_type_list  ) {
-    subset_anno_dt <- anno_dt[cluster %in% cell_type_list,]
-    cell_subset <- subset_anno_dt$cell.name
-    seurat_pdac_obj <- subset( main_pdac_obj, cells = cell_subset )
-        
-    #seurat_pdac_obj <- NormalizeData( seurat_pdac_obj, normalization.method="LogNormalize", scale.factor = 10000 )
-    seurat_pdac_obj <- SCTransform( seurat_pdac_obj )
-    seurat_pdac_obj <- RunPCA( seurat_pdac_obj, assay="SCT" )
-    subset_seurat_obj <- RunUMAP( subset_seurat_obj, reduction="pca", dims=1:50 )
-
-    #seurat_pdac_obj <- FindVariableFeatures(seurat_pdac_obj, selection.method = "vst", nfeatures = 1000, verbose=TRUE )
-    #seurat_pdac_obj <- ScaleData(seurat_pdac_obj)
-
-    return (list(seurat_pdac_obj,subset_anno_dt))
-}
-
+"
+Returns a data.table containing annotations of cells in the PDAC dataset.
+Inputs : 
+annotation_path <- Path to the annotation file of the PDAC data.
+"
 process_annotations <- function( annotation_path ) {
     pdac_anno_dt <- fread( annotation_path )
     pdac_anno_dt$sample_type <- 'tumour'
@@ -131,20 +68,41 @@ process_annotations <- function( annotation_path ) {
     return (pdac_anno_dt)
 }
 
-compute_pca <- function( seurat_obj, cells, num_pcs=50, nfeatures=1000, assay="RNA", pcs_to_use=NULL,
-vars_to_regress=c()) {
+"
+'
+'
+Core edge cell finding functions
+'
+'
+"
+
+"
+Runs the computePCA function in a Seurat object. 
+Inputs : 
+seurat_obj <- Seurat object on which NormalizeData has already been run. 
+cells <- Cells that are to be subsetted out to run the PCA. 
+num_pcs <- Number of PCs to compute. Default : 50
+nfeatures <- Number of highly variable genes to use. Default : 1000
+assay <- Whether to use the raw read counts (RNA) or batch-corrected read counts (integrated). Default : RNA
+pcs_to_use <- A vector defining which PCs are to be used. Example : c('PC_1','PC_2','PC_5') would result in 
+only PCs 1,2 and 5 being returned. Default : NULL, which specifies that all 'num_pcs` PCs are to be computed.
+ 
+Returns : 
+A list containing two elements : 
+pca_df  <- A matrix containing PCs along columns and cell names along rows.
+pca_loadings <- A matrix containing the loadings of each PC. 
+"
+compute_pca <- function( seurat_obj, cells, num_pcs=50, nfeatures=1000, assay="RNA", pcs_to_use=NULL)
     subset_seurat_obj <- subset( seurat_obj, cells=cells )
     DefaultAssay(subset_seurat_obj) <- assay
     if (assay == "RNA") { 
         subset_seurat_obj <- FindVariableFeatures( subset_seurat_obj, selection.method = "vst", nfeatures = nfeatures, verbose=F )
     }
     subset_seurat_obj <- ScaleData( subset_seurat_obj )
-    #subset_seurat_obj <- SCTransform(subset_seurat_obj,verbose=T)
     subset_seurat_obj <- RunPCA( subset_seurat_obj, npcs=num_pcs, verbose=F)
     pca_df <- Embeddings(subset_seurat_obj)
     if (!is.null(pcs_to_use)) {
-        pca_df <- pca_df[,pcs_to_use]# %>% tibble::rownames_to_column("cell.name") %>% dplyr::select(c(cell.name,pcs_to_use)) %>%
-        #tibble::column_to_rownames("cell.name")
+        pca_df <- pca_df[,pcs_to_use]
         if (length(pcs_to_use) == 1) {
             pca_df <- as.matrix(pca_df)
         }
@@ -155,6 +113,35 @@ vars_to_regress=c()) {
     return(list("pca"=pca_df,"loadings"=pca_loadings))
 }
 
+"
+Runs the three-stage variant pipeline to find edge cells. This function helps pick Normal PCs that represent
+significant amounts of gene expression heterogeneity and the Pooled PCs that pass the proximity ratio test, as well
+as return (Normal PC,Pooled PC) pairs that are collinear.
+Inputs : 
+seurat_obj <- Seurat object on which NormalizeData has already been run. 
+malignant_cell_types <- Vector containing cell type labels that are malignant cell types.
+normal_cell_types <- Vector containing cell type labels that are normal cell types.
+num_pcs <- Number of PCs to compute. Default : 50
+perform_control <- Whether to perform three-stage statistical test. Default : T.
+num_control_shuffles <- Number of shuffles to perform for both heterogeneity and proximity ratio tests. Default : 100
+no_tumor_adjacent <- Whether tumor-adjacent cells should be excluded. Default : F i.e., include all tumor-adjacent cells.
+num_var_features <- Number of highly variable genes to use. Default : 1000
+assay <- Whether to use the raw read counts (RNA) or batch-corrected read counts (integrated). Default : RNA
+ident_to_use <- Metadata column of Seurat object that corresponds to cell type identity of each cell. This must
+necessarily contain the values specified in 'normal_cell_types' and 'malignant_cell_types'.
+edge_cell_fraction <- Fraction of cells in each normal cell type that are to be considered as candidate edge cells.
+Default : 0.1
+sample_info_column <- Metadata column of Seurat object containing information on which cells come from which
+sample/donor/biopsy. This is crucial in order to incorporate batch effects in the three-stage tests. 
+Default : NULL, which means no batch effect will be incorporated.
+ 
+Returns : 
+A list containing two elements : 
+edge_center_p_value : A data frame containing correlation coefficients for each Normal PC, Pooled PC pair, as well as
+the p-value for the proximity ratio test for that Pooled PC.
+skewness_p_value : A data frame containing skewness values and their corresponding p-values for each Normal PC in 
+each normal cell type.
+"
 select_edge_center_features <- function( seurat_obj, malignant_cell_types=NULL, normal_cell_types=NULL, num_pcs=50, perform_control = T, 
 num_control_shuffles = 100, no_tumour_adjacent=F, num_var_features=1000, assay_to_use="RNA", ident_to_use="cluster", edge_cell_fraction=0.1, sample_info_column=NULL ) {
     edge_cells_list = list()
@@ -184,14 +171,19 @@ num_control_shuffles = 100, no_tumour_adjacent=F, num_var_features=1000, assay_t
             next
         }
 
+        #First, compute Normal PCs
         normal_pca <- compute_pca( seurat_obj, cells=normal_cells, num_pcs=num_pcs, nfeatures=num_var_features, assay=assay_to_use)
         ret <- self_pca_distances( cells, normal_pca$pca )
+        #Store distances of every normal cell from the normal cell cluster medoid.
         normal_dist_from_medoid <- ret$dist_from_medoid
         subset_seurat_obj <- subset( seurat_obj, cells=normal_cells )
 
-        #normal_medoid <- ret$medoid
         sample_wise_cell_name_list <- NULL
         if (!is.null(sample_info_column)) {
+            "
+            If sample information is provided for each cell, then create a list (indexed by sample ID) of cells
+            coming from each sample.
+            "
              samples <- unique(subset_seurat_obj@meta.data[[sample_info_column]]) 
              for (sample_ in samples) { 
                 cells <- rownames( subset_seurat_obj@meta.data %>% dplyr::filter(!!sym(sample_info_column) == sample_))
@@ -203,10 +195,17 @@ num_control_shuffles = 100, no_tumour_adjacent=F, num_var_features=1000, assay_t
         }
 
         if (perform_control == T) {
+            "
+            Heterogeneity test.
+
+            If raw read counts are being used (assay = 'RNA'), then run NormalizeData, FindVariableFeatures to find
+            variable features. If integrated/batch-corrected read counts are being used (assay = 'integrated'), then 
+            use the variable features determined by Seurat's FindIntegrationFeatures.
+            "
             if (assay_to_use == "RNA") {
                 var_features <- subset_seurat_obj %>% NormalizeData %>% FindVariableFeatures(nfeatures=num_var_features) %>% VariableFeatures
                 skewness_p_value_df <- perform_gene_shuffle_parallel(normal_cells,subset_seurat_obj[[assay_to_use]]@counts[var_features,],
-            num_control_shuffles,sample_wise_cell_name_list,assay_to_use=assay_to_use,npcs=num_pcs) #%>% mutate(normal_cell_type=normal_cell_type)
+            num_control_shuffles,sample_wise_cell_name_list,assay_to_use=assay_to_use,npcs=num_pcs) %>% mutate(normal_cell_type=normal_cell_type)
             } else {
                 var_features <- rownames(subset_seurat_obj)
                 skewness_p_value_df <- perform_gene_shuffle_parallel(normal_cells,subset_seurat_obj[[assay_to_use]]@scale.data[var_features,],
@@ -234,6 +233,7 @@ num_control_shuffles = 100, no_tumour_adjacent=F, num_var_features=1000, assay_t
             }
 
             normal_and_malignant_cells <- c(malignant_cells,normal_cells)
+            #Compute all Pooled PCs
             combined_pca <- compute_pca( seurat_obj, cells=normal_and_malignant_cells, num_pcs=num_pcs,nfeatures=num_var_features, assay=assay_to_use )
 
             for (normal_idx in 1:num_pcs) {
@@ -242,12 +242,20 @@ num_control_shuffles = 100, no_tumour_adjacent=F, num_var_features=1000, assay_t
                 for (combined_idx in 1:num_pcs) {
                     combined_single_pc_mat <- as.matrix(combined_pca$pca[,combined_idx])
                     rownames(combined_single_pc_mat) <- rownames(combined_pca$pca)
+
+                    "
+                    Find candidate edge cells based a given Normal PC, and compute distance of candidate edge cells to
+                    malignant cells using a given Pooled PC.
+                    "
                     edge_center_dt <- annotate_normal_edge_cells( malignant_cells, normal_cells, combined_single_pc_mat, normal_cell_type, malignant_cell_type, self_gene_exp_df=normal_single_pc_mat, edge_cell_fraction=edge_cell_fraction )
                     edge_center_dt[,pc:=paste("combined","PC",combined_idx,sep="_")]
                     edge_center_dt$normal_cell_type <- normal_cell_type
                     edge_center_dt$malignant_cell_type <- malignant_cell_type
 
                     if (perform_control == T) {
+                        "
+                        Proximity Ratio test.
+                        "
                         edge_malignant_dist_dt <- perform_edge_center_shuffle(edge_center_dt,normal_cell_type,malignant_cell_type,num_control_shuffles)
                         edge_malignant_dist_dt[,pc:=paste("combined","PC",combined_idx,sep="_")]
                     }
@@ -269,6 +277,22 @@ num_control_shuffles = 100, no_tumour_adjacent=F, num_var_features=1000, assay_t
     return(list("edge_center_p_value"=combined_edge_center_p_value_df,"skewness_p_value"=combined_skewness_p_value_df))
 }
 
+"
+Carry out skewness test for three-stage pipeline, where PCA is computed after shuffling genes amongst cells in a given donor sample. 
+Inputs : 
+normal_cells <- Vector containing cell names of normal cells on which skewness test is to be carried out.
+gene_exp_df <- Matrix of gene expression values (with dimensions # of genes x # of normal cells)
+num_control_shuffles <- # of shuffles of genes to be carried out for each PCA computation.
+sample_wise_cell_name_list <- List of cells coming from each donor/sample. If NULL, then genes are shuffled amongst all
+cells. If a list is provided, genes are shuffled only amongst cells within each donor. 
+npcs <- # of Normal PCs to compute
+nfeatures <- # of variable features.
+numCores <- # of processing cores to use for shuffling.
+assay_to_use <- Set to 'RNA' for raw read counts, and 'integrated' for using Seurat batch-corrected read counts. 
+
+Returns:
+A data frame containing the skewness of each Normal PC along with its associated p-value and q-value.
+"
 perform_gene_shuffle_parallel <- function(normal_cells,gene_exp_df,num_control_shuffles, sample_wise_cell_name_list=NULL, npcs=50,nfeatures=1000, numCores=6,assay_to_use="RNA") {
     shuffled_skewness_mat <- matrix(0,nrow=npcs,ncol=(num_control_shuffles+1))
     features <- rownames(gene_exp_df)
@@ -311,6 +335,9 @@ perform_gene_shuffle_parallel <- function(normal_cells,gene_exp_df,num_control_s
         obj <- RunPCA(obj,npcs=npcs,features=features,verbose=F) 
         pca_df <- Embeddings(obj,reduction="pca")
         pc_names <- colnames(pca_df)
+        "
+        Compute skewness along each PC after shuffling.
+        "
         for (pc_idx in seq_along(colnames(pca_df)))  {
             ret <- self_pca_distances( normal_cells, pca_df[,pc_names[pc_idx]] )
             shuffled_skewness_vals[pc_idx] = mc(ret$dist_from_medoid)
@@ -321,12 +348,15 @@ perform_gene_shuffle_parallel <- function(normal_cells,gene_exp_df,num_control_s
 
     #skewness_list <- mclapply(0:num_control_shuffles,parallel_pca,mc.cores=numCores)
     skewness_list <- lapply(0:num_control_shuffles,parallel_pca)
-    shuffled_skewness_mat <- sapply(skewness_list,as.matrix)
+    shuf
 
     pc_names <- paste("normal_PC",1:npcs,sep="_")
     rownames(shuffled_skewness_mat) <- pc_names
     colnames(shuffled_skewness_mat) <- c("actual",paste("control",1:num_control_shuffles,sep="_"))
 
+    "
+    Compute p-value of skewness of actual normal cells based on skewness of shuffled cells.
+    "
     skewness_df <- reshape2::melt(shuffled_skewness_mat) %>% mutate(Var2=gsub("_[0-9][0-9]*","",Var2))
     mean_sd_skewness_df <- skewness_df %>% dplyr::filter(Var2 != "actual") %>% 
     group_by(Var1) %>% summarize(m=mean(value),s=sd(value))
@@ -336,22 +366,113 @@ perform_gene_shuffle_parallel <- function(normal_cells,gene_exp_df,num_control_s
     return(skewness_p_value_df)
 }
 
-merge_pca_loadings <- function(normal_pca_loadings_mat,combined_pca_loadings_mat) { 
-    colnames(combined_pca_loadings_mat) <- paste("combined",colnames(combined_pca_loadings_mat),sep="_")
-    colnames(normal_pca_loadings_mat) <- paste("normal",colnames(normal_pca_loadings_mat),sep="_")
-    normal_pca_loadings_dt <- data.table( normal_pca_loadings_mat, keep.rownames=T ) %>% setnames("rn","gene")
-    combined_pca_loadings_dt <- data.table( combined_pca_loadings_mat, keep.rownames=T ) %>% setnames("rn","gene")
-    loadings_dt <- merge(normal_pca_loadings_dt,combined_pca_loadings_dt,by="gene")
+"
+Compute distances of cells from their medoid in a given cluster in PCA space.
+Inputs : 
+cells  <- Names of cells as a vector.
+self_pca_df <- A matrix of size # of cells x # of PCs, with cells indexed according to the names provided in 'cells'
 
-    return(loadings_dt)
+Returns : 
+A list of distances of all cells from the medoid ('dist_from_medoid') and the medoid itself ('medoid')
+"
+self_pca_distances <- function( cells, self_pca_df ) {
+    self_normal_dist_mat <- as.matrix(parDist(as.matrix(self_pca_df, dimnames=list(cells,cells))))
+    medoid <- which.min(rowSums(self_normal_dist_mat))
+    self_dist_from_medoid <- self_normal_dist_mat[,medoid]
+
+    return( list("dist_from_medoid"=self_dist_from_medoid,"medoid"=names(medoid)) )
 }
 
+
+"
+Compute distances of cells from their medoid in a given cluster in PCA space.
+Inputs : 
+cells  <- Names of cells as a vector.
+self_pca_df <- A matrix of size # of cells x # of PCs, with cells indexed according to the names provided in 'cells'
+
+Returns : 
+A list of distances of all cells from the medoid ('dist_from_medoid') and the medoid itself ('medoid')
+"
+annotate_normal_edge_cells <- function( malignant_cells, normal_cells, gene_exp_df, normal_cell_type, malignant_cell_type, edge_cell_fraction=0.1, distance="euclidean", self_gene_exp_df=NULL ) {
+    all_cells <- c(normal_cells,malignant_cells)
+    subset_gene_exp_df <- gene_exp_df[rownames(gene_exp_df) %in% all_cells,]
+    dist_mat <- as.matrix(parDist(as.matrix(subset_gene_exp_df,dimnames=list(all_cells,all_cells)),method=distance))
+
+    ret <- self_pca_distances( normal_cells, self_gene_exp_df )
+    self_dist_normal_from_normal_medoid <- ret$dist_from_medoid
+    edge_dist_threshold <- quantile( self_dist_normal_from_normal_medoid, 1 - edge_cell_fraction )
+    edge_cell_mask <- self_dist_normal_from_normal_medoid > edge_dist_threshold
+    cell_category_labels <- rep( "center", length(normal_cells) )
+    cell_category_labels[edge_cell_mask] <- "edge"
+
+    combined_normal_cells_anno_dt <- data.table()
+    mean_dist_normal_to_malignant <- rowMeans(dist_mat[normal_cells,malignant_cells])
+
+    malignant_only_dist_mat <- dist_mat[malignant_cells,malignant_cells]
+    normal_only_dist_mat <- dist_mat[normal_cells,normal_cells]
+    malignant_medoid <- which.min(rowSums(malignant_only_dist_mat))
+    normal_medoid <- which.min(rowSums(normal_only_dist_mat))
+    dist_normal_from_malignant_medoid <- dist_mat[normal_cells,malignant_medoid]
+    dist_normal_from_all_malignant <- rowMeans(dist_mat[normal_cells,malignant_cells])
+
+    control_idx <- 1
+    normal_cells_anno_dt <- data.table()
+
+    dist_normal_from_normal_medoid <- normal_only_dist_mat[,normal_medoid]
+
+    #closer_to_mal_mask <- dist_normal_from_malignant_medoid < mal_dist_threshold
+    #$farther_from_mal_mask <- !closer_to_mal_mask 
+
+    new_dt <- data.table( dist_from_normal_medoid=dist_normal_from_normal_medoid,
+    dist_from_malignant_medoid=dist_normal_from_malignant_medoid, cell.name=normal_cells,
+    cell_category=cell_category_labels,dist_normal_from_all_malignant=dist_normal_from_all_malignant )
+    new_dt$self_dist_from_normal_medoid <- self_dist_normal_from_normal_medoid
+
+    normal_cells_anno_dt <- rbind( normal_cells_anno_dt, new_dt )
+
+    return( normal_cells_anno_dt )
+}
+
+"
+Runs the two-stage pipeline to find edge cells. This function helps pick Normal PCs that represent
+significant amounts of gene expression heterogeneity and the Pooled PCs that pass the proximity ratio test, as well
+as return (Normal PC,Pooled PC) pairs that are collinear.
+Inputs : 
+seurat_obj <- Seurat object on which NormalizeData has already been run. 
+malignant_cell_types <- Vector containing cell type labels that are malignant cell types.
+normal_cell_types <- Vector containing cell type labels that are normal cell types.
+num_pcs <- Number of PCs to compute. Default : 50
+perform_control <- Whether to perform three-stage statistical test. Default : T.
+num_control_shuffles <- Number of shuffles to perform for both heterogeneity and proximity ratio tests. Default : 100
+no_tumor_adjacent <- Whether tumor-adjacent cells should be excluded. Default : F i.e., include all tumor-adjacent cells.
+num_var_features <- Number of highly variable genes to use. Default : 1000
+assay <- Whether to use the raw read counts (RNA) or batch-corrected read counts (integrated). Default : RNA
+ident_to_use <- Metadata column of Seurat object that corresponds to cell type identity of each cell. This must
+necessarily contain the values specified in 'normal_cell_types' and 'malignant_cell_types'.
+edge_cell_fraction <- Fraction of cells in each normal cell type that are to be considered as candidate edge cells.
+Default : 0.1
+normal_pcs_to_use <- Normal PCs to use for finding edge cells.
+pooled_pcs_to_use <- Pooled PCs to use to compute distance between normal cells and malignant cells.
+sample_info_column <- Metadata column of Seurat object containing information on which cells come from which
+sample/donor/biopsy. This is crucial in order to incorporate batch effects in the three-stage tests. 
+Default : NULL, which means no batch effect will be incorporated.
+ 
+Returns : 
+A list containing two elements : 
+edge_center_dt : A data frame containing each normal cell name, its distance from its own medoid and from the malignant
+medoid. 
+control_dist_dt : A data frame containing skewness values for each normal cell type.
+edge_malignant_dist_dt : A data frame containing proximity ratios for each (normal cell type, malignant cell type) combination.
+edge_center_p_value : A data frame containing correlation coefficients for each Normal PC, Pooled PC pair, as well as
+the p-value for the proximity ratio test for that Pooled PC.
+normal_pca_loadings,combined_pca_loadings <- Loadings of genes in Normal and Pooled PCs
+normal_pca,combined_pca <- PC coordinates of cells in Normal PC and Pooled PC spaces.
+"
 add_edge_center_annotation_classic <- function( seurat_obj, malignant_cell_types=NULL, normal_cell_types=NULL,
 num_pcs=50, perform_control = T, num_control_shuffles = 100, no_tumour_adjacent=F, num_var_features=1000,
 assay_to_use="RNA", ident_to_use="cluster", edge_cell_fraction=0.1, pooled_pcs_to_use=NULL, normal_pcs_to_use=NULL, sample_info_column=NULL  ) {
     edge_cells_list = list()
     center_cells_list = list()
-#    assay_to_use <- "RNA"
     anno_dt <- data.table(seurat_obj@meta.data,keep.rownames=T) %>% setnames("rn","cell.name")
     
     DefaultAssay(seurat_obj) <- assay_to_use
@@ -446,15 +567,27 @@ assay_to_use="RNA", ident_to_use="cluster", edge_cell_fraction=0.1, pooled_pcs_t
         }
     }
 
-    merged_pca_loadings_dt <- merge_pca_loadings( normal_pca$loadings, combined_pca$loadings )
     colnames(combined_pca$pca) <- paste("combined",colnames(combined_pca$pca),sep="_")
     colnames(normal_pca$pca) <- paste("normal",colnames(normal_pca$pca),sep="_")
     if (perform_control == T) {
-        return(list("edge_center_dt"=combined_edge_center_dt,"control_dist_dt"=combined_control_dist_dt,"edge_malignant_dist_dt"=combined_edge_malignant_dist_dt,"merged_pca_loadings"=merged_pca_loadings_dt,"normal_pca_loadings"=normal_pca$loadings,"combined_pca_loadings"=combined_pca$loadings, "normal_pca"=normal_pca$pca,"combined_pca"=combined_pca$pca) )
+        return(list("edge_center_dt"=combined_edge_center_dt,"control_dist_dt"=combined_control_dist_dt,"edge_malignant_dist_dt"=combined_edge_malignant_dist_dt,"normal_pca_loadings"=normal_pca$loadings,"combined_pca_loadings"=combined_pca$loadings, "normal_pca"=normal_pca$pca,"combined_pca"=combined_pca$pca) )
     } else {
         return( list("edge_center_dt"=combined_edge_center_dt,"edge_malignant_dist_dt"=combined_edge_malignant_dist_dt,"merged_pca_loadings"=merged_pca_loadings_dt,"normal_pca_loadings"=normal_pca$loadings,"combined_pca_loadings"=combined_pca$loadings, "normal_pca"=normal_pca$pca,"combined_pca"=combined_pca$pca) )  }
 }
 
+"
+Shuffle PCs amongst cells in each donor and then compute distances of cells from their medoid. This function is used in
+the two-stage test. 
+Inputs : 
+normal_cells <- Vector containing cell names of normal cells on which skewness test is to be carried out.
+normal_pca_df <- Matrix of Normal PC values (with dimensions # of cells x # of Normal PCs used)
+num_control_shuffles <- # of shuffles of genes to be carried out for each PCA computation.
+sample_wise_cell_name_list <- List of cells coming from each donor/sample. If NULL, then genes are shuffled amongst all
+cells. If a list is provided, genes are shuffled only amongst cells within each donor. 
+
+Returns:
+A data frame containing the distance of each cell from its medoid after each shuffle.
+"
 perform_pca_shuffle <- function(normal_cells,normal_pca_df,num_control_shuffles,sample_wise_cell_name_list=NULL) {
     control_dist_matrix <- matrix(0,nrow=length(normal_cells),ncol=num_control_shuffles)
     for (i in 1:num_control_shuffles) {
@@ -486,6 +619,18 @@ perform_pca_shuffle <- function(normal_cells,normal_pca_df,num_control_shuffles,
     return(control_dist_dt)
 }
 
+"
+Shuffle edge and non-edge (or center) labels amongst cells in a normal cluster. This is to compute the proximity ratio
+test.
+Inputs : 
+edge_center_dt <- Data frame returned by running add_edge_center_annotation_classic() on a Seurat object.
+normal_cell_type <- Normal cell type for which ratio test is to be computed
+malignant_cell_type <- Malignant cell type for which ratio test is to tbe computed.
+num_control_shuffles <- # of shuffles of genes to be carried out for each PCA computation.
+
+Returns:
+A data frame containing proximity ratio values of actual edge cells and shuffled edge cells.
+"
 perform_edge_center_shuffle <- function(edge_center_dt,normal_cell_type,malignant_cell_type,num_control_shuffles=100) {
     edge_center_dist_ratio <- mean(edge_center_dt[cell_category == "edge",dist_from_malignant_medoid])/mean(edge_center_dt[cell_category == "center",dist_from_malignant_medoid])
     edge_malignant_dist_dt <- data.table( normal_cell_type = normal_cell_type, malignant_cell_type = malignant_cell_type, edge_center_dist_ratio=edge_center_dist_ratio, dist_type="actual" )
@@ -503,6 +648,13 @@ perform_edge_center_shuffle <- function(edge_center_dt,normal_cell_type,malignan
     return(edge_malignant_dist_dt)
 }
 
+"
+'
+'
+Miscellaneous functions
+'
+'
+"
 get_entrez_dt <- function( gene_names ) {
     gene_name_to_entrez_df <- select( org.Hs.eg.db, keys=gene_names, columns=c("ENTREZID"), keytype = "SYMBOL" )
     de_entrez_ids <- gene_name_to_entrez_df$ENTREZID
