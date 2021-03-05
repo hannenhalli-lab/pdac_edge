@@ -92,7 +92,7 @@ A list containing two elements :
 pca_df  <- A matrix containing PCs along columns and cell names along rows.
 pca_loadings <- A matrix containing the loadings of each PC. 
 "
-compute_pca <- function( seurat_obj, cells, num_pcs=50, nfeatures=1000, assay="RNA", pcs_to_use=NULL)
+compute_pca <- function( seurat_obj, cells, num_pcs=50, nfeatures=1000, assay="RNA", pcs_to_use=NULL) {
     subset_seurat_obj <- subset( seurat_obj, cells=cells )
     DefaultAssay(subset_seurat_obj) <- assay
     if (assay == "RNA") { 
@@ -1583,3 +1583,56 @@ subsample_edge_non_edge_cells <- function(aucell_dt) {
     return(cells_to_retain)
 }
 
+load_tosti2020_data <- function() {
+    output_path <- file.path(base_path,"Tosti_Seurat.rds")
+
+    if (!file.exists(output_path)) {
+        gene_exp_dt <- fread(file.path(base_path,"Tosti_2020_exprMatrix.tsv.gz"))
+        gene_names <- gsub("\\|.*","",gene_names)
+        gene_exp_mat <- gene_exp_dt %>% tibble::column_to_rownames("gene") %>% as.matrix
+        rownames(gene_exp_mat) <- gene_names
+        tosti_meta_data_dt <- fread(file.path(base_path,"Tosti_2020_Metadata.tsv"))
+
+        chunk_size <- 10000
+        cell_names <- setdiff(colnames(gene_exp_dt),"gene")
+        num_cells <- length(cell_names)
+        idx <- 1
+        gene_names <- gene_exp_dt$gene
+        gene_names <- gsub("\\|.*","",gene_names)
+        gene_exp_mat <- NULL
+
+        while (idx < num_cells) {
+            print(idx)
+            flush.console()
+            idx_min <- idx
+            if (idx + chunk_size > num_cells) {
+                idx_max <- ncol(gene_exp_dt) - 1
+            } else {
+                idx_max <- idx_min + chunk_size - 1
+            }
+            temp_mat <- gene_exp_dt[,cell_names[idx_min:idx_max],with=F] %>% as.matrix %>% as.sparse
+            colnames(temp_mat) <- cell_names[idx_min:idx_max]
+            if (is.null(gene_exp_mat)) {
+                gene_exp_mat <- temp_mat
+                rownames(gene_exp_mat) <- gene_names
+            } else {
+                gene_exp_mat <- cbind(gene_exp_mat,temp_mat)
+            }
+            idx <- idx + chunk_size
+        }
+        rm(gene_exp_dt)
+
+        tosti_seurat_obj <- CreateSeuratObject( gene_exp_mat, 
+                                               meta.data = tibble::column_to_rownames(tosti_meta_data_dt,"Cell") )
+
+        exp_threshold <- 0.01
+        genes_to_keep <- names(which(rowMeans(tosti_seurat_obj[["RNA"]]@counts > 0) >= exp_threshold))
+        tosti_seurat_obj <- subset( tosti_seurat_obj, features = genes_to_keep )
+        tosti_seurat_obj <- SetIdent(tosti_seurat_obj,value="Cluster")
+        saveRDS(tosti_seurat_obj,output_path)
+    } else {
+        tosti_seurat_obj <- readRDS(output_path)
+    }
+
+    return(tosti_seurat_obj)
+}
