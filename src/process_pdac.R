@@ -1,6 +1,7 @@
 library(data.table)
 library(Seurat)
 library(optparse)
+library(Matrix)
 library(sctransform)
 library(dplyr)
 library(org.Hs.eg.db)
@@ -203,7 +204,7 @@ num_control_shuffles = 100, no_tumour_adjacent=F, num_var_features=1000, assay_t
             use the variable features determined by Seurat's FindIntegrationFeatures.
             "
             if (assay_to_use == "RNA") {
-                var_features <- subset_seurat_obj %>% NormalizeData %>% FindVariableFeatures(nfeatures=num_var_features) %>% VariableFeatures
+                var_features <- subset_seurat_obj %>% FindVariableFeatures(nfeatures=num_var_features) %>% VariableFeatures
                 skewness_p_value_df <- perform_gene_shuffle_parallel(normal_cells,subset_seurat_obj[[assay_to_use]]@counts[var_features,],
             num_control_shuffles,sample_wise_cell_name_list,assay_to_use=assay_to_use,npcs=num_pcs) %>% mutate(normal_cell_type=normal_cell_type)
             } else {
@@ -272,6 +273,8 @@ num_control_shuffles = 100, no_tumour_adjacent=F, num_var_features=1000, assay_t
             }
         }
     }
+    print(head(combined_edge_center_p_value_df))
+    print(head(combined_skewness_p_value_df))
 
     combined_edge_center_p_value_df <- combined_edge_center_p_value_df %>% mutate(q_value = p.adjust(p_value)) %>% data.table
     return(list("edge_center_p_value"=combined_edge_center_p_value_df,"skewness_p_value"=combined_skewness_p_value_df))
@@ -311,19 +314,20 @@ perform_gene_shuffle_parallel <- function(normal_cells,gene_exp_df,num_control_s
         if (idx == 0) {
             obj <- orig_seurat_obj
         } else {
-            set.seed(idx)
             if (is.null(sample_wise_cell_name_list)) {
                 shuffled_mat <- apply(scaled_mat,1,sample) %>% t
                 colnames(shuffled_mat) <- colnames(scaled_mat)
             } else {
                 shuffled_mat <- scaled_mat
+                set.seed(idx)
                 for (sample_ in names(sample_wise_cell_name_list)) { 
                     cells <- sample_wise_cell_name_list[[sample_]]
                     if (length(cells) > 1) {
                         shuffled_mat[,cells] <- apply(scaled_mat[,cells],1,sample) %>% t
-                    } else {
-                        shuffled_mat[,cells] <- scaled_mat[,cells]
                     }
+                    #} else {
+                    #    shuffled_mat[,cells] <- scaled_mat[,cells]
+                    #}
                 }
             }
             shuffled_seurat_obj[["RNA"]]@scale.data <- shuffled_mat
@@ -347,8 +351,7 @@ perform_gene_shuffle_parallel <- function(normal_cells,gene_exp_df,num_control_s
     }
 
     #skewness_list <- mclapply(0:num_control_shuffles,parallel_pca,mc.cores=numCores)
-    skewness_list <- lapply(0:num_control_shuffles,parallel_pca)
-    shuf
+    shuffled_skewness_mat <- sapply(0:num_control_shuffles,parallel_pca)
 
     pc_names <- paste("normal_PC",1:npcs,sep="_")
     rownames(shuffled_skewness_mat) <- pc_names
@@ -363,6 +366,7 @@ perform_gene_shuffle_parallel <- function(normal_cells,gene_exp_df,num_control_s
     skewness_p_value_df <- merge( skewness_df %>% dplyr::filter(Var2 == "actual"),
                                 mean_sd_skewness_df, by="Var1") %>% 
      group_by(Var1) %>% mutate(p_value=1-pnorm(value,m,s)) %>% data.frame %>% mutate(q_value=p.adjust(p_value))
+     print(head(skewness_p_value_df))
     return(skewness_p_value_df)
 }
 
@@ -551,7 +555,6 @@ assay_to_use="RNA", ident_to_use="cluster", edge_cell_fraction=0.1, pooled_pcs_t
                 flush.console()
                 next
             }
-
             normal_and_malignant_cells <- c(malignant_cells,normal_cells)
             pooled_pcs_to_use <- gsub("combined_","",pooled_pcs_to_use)
             combined_pca <- compute_pca( seurat_obj, cells=normal_and_malignant_cells, num_pcs=num_pcs,nfeatures=num_var_features, assay=assay_to_use )
@@ -570,9 +573,11 @@ assay_to_use="RNA", ident_to_use="cluster", edge_cell_fraction=0.1, pooled_pcs_t
     colnames(combined_pca$pca) <- paste("combined",colnames(combined_pca$pca),sep="_")
     colnames(normal_pca$pca) <- paste("normal",colnames(normal_pca$pca),sep="_")
     if (perform_control == T) {
-        return(list("edge_center_dt"=combined_edge_center_dt,"control_dist_dt"=combined_control_dist_dt,"edge_malignant_dist_dt"=combined_edge_malignant_dist_dt,"normal_pca_loadings"=normal_pca$loadings,"combined_pca_loadings"=combined_pca$loadings, "normal_pca"=normal_pca$pca,"combined_pca"=combined_pca$pca) )
+        return(list("edge_center_dt"=combined_edge_center_dt,"control_dist_dt"=combined_control_dist_dt,"edge_malignant_dist_dt"=combined_edge_malignant_dist_dt,"normal_pca_loadings"=normal_pca$loadings,"combined_pca_loadings"=combined_pca$loadings, "normal_pca"=normal_pca$pca,"combined_pca"=combined_pca$pca,
+"normal_PCs_used"=normal_pcs_to_use,"combined_PCs_used"=pooled_pcs_to_use) )
     } else {
-        return( list("edge_center_dt"=combined_edge_center_dt,"edge_malignant_dist_dt"=combined_edge_malignant_dist_dt,"merged_pca_loadings"=merged_pca_loadings_dt,"normal_pca_loadings"=normal_pca$loadings,"combined_pca_loadings"=combined_pca$loadings, "normal_pca"=normal_pca$pca,"combined_pca"=combined_pca$pca) )  }
+        return( list("edge_center_dt"=combined_edge_center_dt,"edge_malignant_dist_dt"=combined_edge_malignant_dist_dt,"normal_pca_loadings"=normal_pca$loadings,"combined_pca_loadings"=combined_pca$loadings, "normal_pca"=normal_pca$pca,"combined_pca"=combined_pca$pca,
+"normal_PCs_used"=normal_pcs_to_use,"combined_PCs_used"=pooled_pcs_to_use ))  }
 }
 
 "
@@ -803,7 +808,6 @@ create_resampled_seurat_obj <- function( count_mat, meta_data_dt, feature_counts
         #print(dim(resampled_mat))
     }
     
-    #4 + ""
     new_meta_data_df <- as.data.frame( meta_data_dt[match(cell.name,cell_name_order),.(cell.name,cluster)] )
     rownames(new_meta_data_df) <- new_meta_data_df$cell.name
     resampled_seurat_obj <- CreateSeuratObject( resampled_mat, meta.data=new_meta_data_df )
@@ -938,16 +942,17 @@ gene_assign <- function( regulatory_dt, assign_type="overlap", dist_threshold=80
     return(regulatory_dt)
 }
 
-compute_gene_set_AUCell_scores <- function(gene_exp_mat,gene_set,age_info_dt,auc_thr=NULL,threshold_type="Global_k1") {
+compute_gene_set_AUCell_scores <-
+function(gene_exp_mat,gene_set,age_info_dt,auc_thr=NULL,threshold_type="Global_k1",nCores=6) {
     #gene_sets <- list("edge"=acinar_edge_genes)
     gene_set_name <- names(gene_set)
-    cells_rankings <- AUCell_buildRankings(gene_exp_mat, nCores=6, plotStats=F)
+    cells_rankings <- AUCell_buildRankings(gene_exp_mat, nCores=nCores, plotStats=F)
     cells_AUC <- AUCell_calcAUC(gene_set, cells_rankings)
     cells_assignment <- AUCell_exploreThresholds(cells_AUC, plotHist=TRUE, assign=TRUE)
 
     aucell_scores_mat <- t(getAUC(cells_AUC))
-    aucell_dt <- data.table(aucell_scores_mat,keep.rownames=T) %>% setnames("rn","cell.name") %>% #value=paste(gene_set_name,"AUC",sep="_") ) %>%
-     merge( age_info_dt[,.(cell.name,age)], by="cell.name")
+    #return(data.table(aucell_scores_mat,keep.rownames=T) %>% setnames("rn","cell.name"))
+    aucell_dt <- data.table(aucell_scores_mat,keep.rownames=T) %>% setnames("rn","cell.name") %>% merge.data.table( age_info_dt[,.(cell.name,age)], by="cell.name")
     if (is.null(auc_thr)) {
         auc_thr <- cells_assignment[[gene_set_name]]$aucThr$thresholds[threshold_type,"threshold"]
     }
@@ -1126,30 +1131,28 @@ run_edge_pipeline <- function( seurat_obj, malignant_cell_types=NULL, normal_cel
        no_tumour_adjacent=no_tumour_adjacent, num_var_features=num_var_features,
        assay_to_use="RNA",ident_to_use=ident_to_use,edge_cell_fraction=edge_cell_fraction,
        sample_info_column=sample_info_column)
+       return(edge_info)
    } else if (pipeline_variant == "feature-selection") {
         print("Feature selection mode")
-        features_file_name <- paste(normal_cell_types,malignant_cell_types,assay_to_use,"analysis.rds",sep="_")
-        if (!is.null(features_prefix)) {
-            features_file_name <- paste(features_prefix,features_file_name,sep="_")
-        }
 
-        if (!is.null(sample_info_column)) { 
-            features_file_name <- paste("sample_aware",features_file_name,sep="_")
-        }
-
-        if (length(normal_cell_types) > 1 || length(malignant_cell_types) > 1) {
-            edge_info_list <- list()
-        }
+        edge_info_list <- list()
         for (normal_cell_type in normal_cell_types) {
             for (malignant_cell_type in malignant_cell_types) {
+                features_file_name <- paste(normal_cell_type,malignant_cell_type,assay_to_use,"analysis.rds",sep="_")
+                if (!is.null(features_prefix)) {
+                    features_file_name <- paste(features_prefix,features_file_name,sep="_")
+                }
+
+                if (!is.null(sample_info_column)) { 
+                    features_file_name <- paste("sample_aware",features_file_name,sep="_")
+                }
                 if (file.exists(features_file_name)) {
                    edge_features <- readRDS(features_file_name) 
                 } else {
                     edge_features <- select_edge_center_features( seurat_obj,
                     malignant_cell_types=c(malignant_cell_type), normal_cell_types=c(normal_cell_type), num_pcs=num_pcs,
                     perform_control=perform_control, no_tumour_adjacent=no_tumour_adjacent,
-                    num_var_features=num_var_features,
-                    assay_to_use="RNA",ident_to_use=ident_to_use,edge_cell_fraction=edge_cell_fraction,
+                    num_var_features=num_var_features, num_control_shuffles=num_control_shuffles, assay_to_use="RNA",ident_to_use=ident_to_use,edge_cell_fraction=edge_cell_fraction,
                     sample_info_column=sample_info_column)
                     saveRDS(edge_features,features_file_name)
                 }
@@ -1178,11 +1181,11 @@ run_edge_pipeline <- function( seurat_obj, malignant_cell_types=NULL, normal_cel
         }
     }
 
-    if (length(normal_cell_types) > 1 || length(malignant_cell_types) > 1) {
-        return(edge_info_list) 
-    } else {
-        return(edge_info)
-    }
+    #if (length(normal_cell_types) > 1 || length(malignant_cell_types) > 1) {
+        return(edge_info) 
+    #} else {
+    #    return(edge_info)
+    #}
 }
 
 gene_exp_regression <- function(gene_exp_mat,to_regress_df,regressors,coefs_to_return) {
@@ -1497,7 +1500,7 @@ q_value_thresh=0.1) {
                         if (length(unique(subset_seurat_obj@meta.data[[sample_info_column]])) == 1) {
                             ret <- get_edge_signatures( subset_seurat_obj, vars_to_regress=c("S.Score","G2M.Score"))
                         } else {
-                            ret <-  get_edge_signatures( subset_seurat_obj, vars_to_regress=c("S.Score","G2M.Score",sample_info_column))
+                            ret <- get_edge_signatures( subset_seurat_obj, vars_to_regress=c("S.Score","G2M.Score",sample_info_column))
                         }
                         saveRDS( ret, logFC_file )
                     } else {
@@ -1583,13 +1586,13 @@ subsample_edge_non_edge_cells <- function(aucell_dt) {
     return(cells_to_retain)
 }
 
-load_tosti2020_data <- function() {
+load_tosti2020_normal_tumor_data <- function() {
     output_path <- file.path(base_path,"Tosti_Seurat.rds")
 
     if (!file.exists(output_path)) {
         gene_exp_dt <- fread(file.path(base_path,"Tosti_2020_exprMatrix.tsv.gz"))
+        gene_names <- gene_exp_dt$gene
         gene_names <- gsub("\\|.*","",gene_names)
-        gene_exp_mat <- gene_exp_dt %>% tibble::column_to_rownames("gene") %>% as.matrix
         rownames(gene_exp_mat) <- gene_names
         tosti_meta_data_dt <- fread(file.path(base_path,"Tosti_2020_Metadata.tsv"))
 
@@ -1625,14 +1628,663 @@ load_tosti2020_data <- function() {
         tosti_seurat_obj <- CreateSeuratObject( gene_exp_mat, 
                                                meta.data = tibble::column_to_rownames(tosti_meta_data_dt,"Cell") )
 
-        exp_threshold <- 0.01
-        genes_to_keep <- names(which(rowMeans(tosti_seurat_obj[["RNA"]]@counts > 0) >= exp_threshold))
-        tosti_seurat_obj <- subset( tosti_seurat_obj, features = genes_to_keep )
-        tosti_seurat_obj <- SetIdent(tosti_seurat_obj,value="Cluster")
         saveRDS(tosti_seurat_obj,output_path)
     } else {
         tosti_seurat_obj <- readRDS(output_path)
     }
 
+    exp_threshold <- 0.01
+    genes_to_keep <- names(which(rowMeans(tosti_seurat_obj[["RNA"]]@counts > 0) >= exp_threshold))
+    tosti_seurat_obj <- subset( tosti_seurat_obj, features = genes_to_keep )
+    tosti_seurat_obj <- SetIdent(tosti_seurat_obj,value="Cluster")
+
     return(tosti_seurat_obj)
+}
+
+load_tosti2020_cp_data <- function() {
+    output_path <- file.path(base_path,"Tosti_CP_Seurat.rds")
+
+    if (!file.exists(output_path)) {
+        gene_exp_dt <- fread(file.path(base_path,"Tosti_CP_exprMatrix.tsv.gz"))
+        gene_names <- gene_exp_dt$gene
+        gene_names <- gsub("\\|.*","",gene_names)
+        gene_exp_mat <- gene_exp_dt %>% tibble::column_to_rownames("gene") %>% as.matrix
+        rownames(gene_exp_mat) <- gene_names
+        tosti_meta_data_dt <- fread(file.path(base_path,"Tosti_CP_meta.tsv"))
+
+        tosti_seurat_obj <- CreateSeuratObject( gene_exp_mat, 
+                                               meta.data = tibble::column_to_rownames(tosti_meta_data_dt,"Cell") )
+
+        saveRDS(tosti_seurat_obj,output_path)
+    } else {
+        tosti_seurat_obj <- readRDS(output_path)
+    }
+
+    exp_threshold <- 0.01
+    genes_to_keep <- names(which(rowMeans(tosti_seurat_obj[["RNA"]]@counts > 0) >= exp_threshold))
+    tosti_seurat_obj <- subset( tosti_seurat_obj, features = genes_to_keep )
+    tosti_seurat_obj <- SetIdent(tosti_seurat_obj,value="Cluster")
+
+    return(tosti_seurat_obj)
+}
+
+load_tosti2020_neo_data <- function() {
+    output_path <- file.path(base_path,"Tosti_Neo_Seurat.rds")
+
+    if (!file.exists(output_path)) {
+        gene_exp_dt <- fread(file.path(base_path,"Tosti_Neo_exprMatrix.tsv.gz"))
+        gene_names <- gene_exp_dt$gene
+        gene_names <- gsub("\\|.*","",gene_names)
+        gene_exp_mat <- gene_exp_dt %>% tibble::column_to_rownames("gene") %>% as.matrix
+        rownames(gene_exp_mat) <- gene_names
+        tosti_meta_data_dt <- fread(file.path(base_path,"Tosti_Neo_meta.tsv"))
+
+        tosti_seurat_obj <- CreateSeuratObject( gene_exp_mat, 
+                                               meta.data = tibble::column_to_rownames(tosti_meta_data_dt,"Cell") )
+
+        saveRDS(tosti_seurat_obj,output_path)
+    } else {
+        tosti_seurat_obj <- readRDS(output_path)
+    }
+
+    exp_threshold <- 0.01
+    genes_to_keep <- names(which(rowMeans(tosti_seurat_obj[["RNA"]]@counts > 0) >= exp_threshold))
+    tosti_seurat_obj <- subset( tosti_seurat_obj, features = genes_to_keep )
+    tosti_seurat_obj <- SetIdent(tosti_seurat_obj,value="Cluster")
+
+    return(tosti_seurat_obj)
+}
+
+load_tosti2020_combined_data <- function( ) {
+    output_path <- file.path(base_path,"Tosti_Combined_Seurat.rds")
+
+    if (!file.exists(output_path)) {
+        tosti_seurat_obj <- load_tosti2020_normal_tumor_data()
+        tosti_cp_seurat_obj <- load_tosti2020_cp_data()
+        tosti_neo_seurat_obj <- load_tosti2020_neo_data()
+        tosti_cp_seurat_obj$pancreas_location <- "head"
+        tosti_cp_seurat_obj$orig.ident <- paste(tosti_cp_seurat_obj$patient_ID,"head",sep="-")
+        tosti_seurat_obj$orig.ident <- paste(tosti_seurat_obj$patient_ID,tosti_seurat_obj$pancreas_location,sep="-")
+        tosti_neo_seurat_obj$orig.ident <- tosti_neo_seurat_obj$patient_ID
+        tosti_combined_seurat_obj <- merge(tosti_seurat_obj,tosti_cp_seurat_obj) %>% merge(.,tosti_neo_seurat_obj)
+
+        saveRDS(tosti_combined_seurat_obj,output_path)
+    } else {
+        tosti_combined_seurat_obj <- readRDS(output_path)
+    }
+
+    return(tosti_combined_seurat_obj)
+}
+
+load_gse141017_data <- function() {
+    output_path <- file.path(base_path,"GSE141017_Seurat.rds")
+    if (!file.exists(output_path)) {
+        gene_exp_mat <- fread(file.path(base_path,"GSE141017_ALL.csv.gz")) %>% tibble::column_to_rownames("V1") %>% as.matrix 
+
+        meta_data_dt <- fread(file.path(base_path,"GSE141017_ALL_barcode_ident.csv.gz")) %>%
+        mutate(cell_barcode=gsub("\\.","-",cell_barcode))
+        unique_barcodes <- meta_data_dt[,.N,by=cell_barcode][N == 1,cell_barcode]
+        meta_data_dt <- meta_data_dt[cell_barcode %in% unique_barcodes,] %>% tibble::column_to_rownames("cell_barcode")
+
+        old_cells <- colnames(gene_exp_mat)
+        new_cells <- gsub("^X__*","",old_cells) %>% gsub("^__*","",.)
+        cells_df <- data.frame(old=old_cells,new=new_cells)
+        name_conv_vec <- cells_df %>% dplyr::filter(new %in% unique_barcodes) %>% tibble::deframe(.)
+        colnames(gene_exp_mat) <- name_conv_vec[colnames(gene_exp_mat)]
+
+        gse141017_obj <- CreateSeuratObject(gene_exp_mat[,unique_barcodes],orig.ident="GSE141017",meta.data=meta_data_dt)
+        gse141017_obj <- SetIdent(gse141017_obj,value="ident") %>%
+        RenameIdents(.,c("9"="Acinar","15"="Acinar"))
+        DotPlot( gse141017_obj, features=c("tdTomato","Krt19","Sox9","Muc5ac","Gkn1","Gkn2",
+                                           "Tlf1","Muc6","Pga5","Pgc","Try4","Cpa1","Cpa2","Cela2a",
+                                           "Amy2a2","Reg3b","Krt19","Mmp7","Amy1") %>% unique) +
+        theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))
+        saveRDS(DietSeurat(gse141017_obj),output_path)
+    } else {
+        gse141017_obj <- readRDS(output_path)
+    }
+
+    return(gse141017_obj)
+}
+
+load_gse125588_data <- function() {
+    dataset_vec <-c("GSE125588_early_KIC","GSE125588_normal") #c("GSE125588_early_KIC","GSE125588_late_KIC","GSE125588_late_KPC","GSE125588_late_KPfC","GSE125588_normal")
+    data_paths <- c("GSE125588_early_KIC"=file.path(base_path,"GSE125588_Early_KIC_Seurat.rds"),
+                    "GSE125588_normal"=file.path(base_path,"GSE125588_Normal_Acinar_Seurat.rds"))
+    cluster_num_list <- list("GSE125588_early_KIC"=c(3), "GSE125588_normal"=c(0,1))
+    obj_list <- list()
+    for (dataset in dataset_vec) {
+       obj <- Read10X(file.path(base_path,dataset)) %>% CreateSeuratObject(.,project=dataset)
+
+        if (!file.exists(data_paths[dataset])) {
+            obj <- NormalizeData(obj) %>% FindVariableFeatures %>% ScaleData %>% RunPCA(npcs=30) %>%
+            FindNeighbors %>% FindClusters(resolution=0.6) %>% RunUMAP(.,dims=1:30)
+            meta_data_df <- obj@meta.data %>% tibble::rownames_to_column("cell.name") %>%
+            mutate(cluster=ifelse(obj$seurat_clusters %in% cluster_num_list,
+                                                                "Acinar",seurat_clusters)) %>%
+            tibble::column_to_rownames("cell.name")
+            obj <- AddMetaData( obj, meta_data_df ) %>% SetIdent(value="cluster")
+
+            marker_genes <- c("Amy1","Amy2a2","Prss2","Ctrb1","Pyy","Sst","Sox9","Krt18","Cd14",
+                                              "Adgre1","Cd3d","Cd3e","Cd19","Cd79b")
+            mat <- FetchData( obj, vars=c("cluster",marker_genes )) %>%
+            group_by(cluster) %>% summarize_at(marker_genes,mean) %>% tibble::column_to_rownames("cluster") %>%
+            as.matrix %>% scale 
+            cols <- colorRamp2(c(min(mat),0,max(mat)),c("blue","white","red"))
+            Heatmap( mat, col=cols )
+            saveRDS( subset( obj, subset = cluster == "Acinar" ), data_paths[dataset] )
+        } else {
+            obj <- readRDS(data_paths[dataset]) %>% subset(subset = cluster == "Acinar")
+        }
+        obj_list[[dataset]] <- obj
+    }
+
+    return(obj_list)
+}
+
+load_muris_data <- function() {
+    temp <- load(file.path(base_path,"facs_Pancreas_seurat_tiss.Robj"))
+    muris_obj <- UpdateSeuratObject(tiss) %>% subset(subset = free_annotation=="acinar cell")
+    muris_obj$orig.ident <- paste("Muris",muris_obj$mouse.id,sep="-")
+    muris_obj$cluster <- "Acinar"
+
+    return(muris_obj)
+}
+
+load_muris_senis_data <- function() { 
+    file_path <- file.path(base_path,"Tabula_Muris_Senis_Seurat.rds")
+    muris_senis_obj <- readRDS(file_path) %>% subset( subset = cell_ontology_class == "pancreatic acinar cell")
+    muris_senis_obj$cluster <- "Acinar"
+    muris_senis_obj$orig.ident <- paste("Muris Senis",
+                                        muris_senis_obj$mouse.id,
+                                       muris_senis_obj$age,sep="-")
+    return(muris_senis_obj)
+}
+
+load_normal_breast_fluidigm_data <- function() {
+    obj_path <- file.path(base_path,"Breast_Fluidigm_Seurat_Object.rds")
+    if (!file.exists(obj_path)) {
+        file_paths <- list.files(file.path(base_path,"GSE113197"),full.names=T)
+        combined_gene_exp_dt <- data.table()
+        meta_data_df <- data.frame()
+        cell_names <- c()
+        for (file_path in file_paths) {
+            if (!grepl("gz$",file_path) | !grepl("Lib",file_path))
+                next
+            individual <- str_match(file_path,"Ind[0-9]") %>% unlist %>% as.character
+            lib <- str_match(file_path,"Lib[0-9]") %>% unlist %>% as.character
+            well_id <- str_match(file_path,"_[A-Z][0-9][0-9]*_") %>% unlist %>% as.character %>% gsub("_","",.)
+            gsm_num <- str_match(file_path,"GSM[0-9][0-9]*") %>% unlist %>% as.character
+            gene_exp_dt <- fread(file_path)  %>% mutate(FPKM=log(1+FPKM))
+            flush.console()
+            gene_exp_dt <- dplyr::rename(gene_exp_dt,!!gsm_num:=FPKM)
+            meta_data_df <- rbind( meta_data_df, data.frame("orig.ident"=individual,"lib"=lib,"well_id"=well_id) )
+            cell_names <- c(cell_names,gsm_num)
+            if (nrow(combined_gene_exp_dt) == 0) {
+                combined_gene_exp_dt <- gene_exp_dt 
+            } else {
+                combined_gene_exp_dt <- merge(combined_gene_exp_dt,gene_exp_dt,by="gene_id")
+            }
+        }
+
+
+        rownames(meta_data_df) <- cell_names
+        mart_human = useMart("ensembl", dataset="hsapiens_gene_ensembl",verbose=F,host="ensembl.org")
+        genes_dt <- getBM( attributes=c("ensembl_gene_id","external_gene_name"),
+        filters="ensembl_gene_id", values=combined_gene_exp_dt$gene_id, mart=mart_human, verbose=F ) %>% data.table(.)
+        combined_gene_exp_dt <- merge( combined_gene_exp_dt, genes_dt, by.x="gene_id",by.y="ensembl_gene_id")
+
+        cols <- colnames(combined_gene_exp_dt)[grepl("GSM",colnames(combined_gene_exp_dt))]
+        combined_gene_exp_dt <- combined_gene_exp_dt %>% group_by(external_gene_name) %>% summarize_at(cols,sum) %>% ungroup
+
+        gene_exp_mat <- tibble::column_to_rownames(combined_gene_exp_dt,"external_gene_name") %>% as.matrix
+        breast_obj <- CreateSeuratObject(gene_exp_mat,meta.data=meta_data_df,project="Fluidigm")
+
+        breast_obj <- FindVariableFeatures(breast_obj)
+        obj_list <- SplitObject(breast_obj,split.by="orig.ident")
+        idx <- 1
+        for (obj_name in names(obj_list)) {
+            obj_list[[obj_name]] <- NormalizeData(obj_list[[obj_name]]) %>% FindVariableFeatures
+        }
+
+        anchors <- FindIntegrationAnchors( obj_list )
+        breast_obj <- IntegrateData( anchors )
+        rm(anchors)
+        rm(obj_list)
+
+        DefaultAssay(breast_obj) <- "integrated"
+        breast_obj <- ScaleData(breast_obj) %>% RunPCA(.,npcs=10) %>% 
+        FindNeighbors(.,dims=1:10) %>% FindClusters(.,res=0.3) %>% RunUMAP(.,dims=1:10)
+
+        breast_obj <- RunTSNE(breast_obj)
+        DimPlot( breast_obj, label=T, label.size=5, reduction="tsne" )
+        DefaultAssay(breast_obj) <- "RNA"
+        DotPlot(breast_obj,features=c("KRT14","KRT5","ACTA2","MYLK","TP63","EPCAM",
+                                                   "SLPI","PROM1","KRT19","KRT18","ANKRD30A","SYTL2","TCF4","ZEB1")) + coord_flip()
+
+        meta_data_df <- tibble::rownames_to_column(breast_obj@meta.data,
+                                                   "cell.name") %>%
+        mutate(cluster=case_when( 
+        seurat_clusters %in% c(1,2,4,5) ~ "Basal",
+        seurat_clusters == 3 ~ "Luminal2",
+        seurat_clusters == 0 ~ "Luminal1")) %>% tibble::column_to_rownames("cell.name")
+        breast_obj <- AddMetaData(breast_obj,meta_data_df)
+
+        saveRDS(breast_obj,obj_path)
+    } else {
+        breast_obj <- readRDS(obj_path)
+    }
+
+    return(breast_obj)
+}
+
+load_normal_breast_10X_data <- function() {
+    obj_path <- file.path(base_path,"Breast_10X_Seurat_Object.rds")
+    if (!file.exists(obj_path)) {
+        file_names <- c("Ind4"="GSM3099846_Ind4_Expression_Matrix.txt.gz","Ind6"="GSM3099848_Ind6_Expression_Matrix.txt.gz",
+    "Ind5"="GSM3099847_Ind5_Expression_Matrix.txt.gz","Ind7"="GSM3099849_Ind7_Expression_Matrix.txt.gz")
+        breast_obj <- NULL
+        for (sample_name in names(file_names)) {
+            mat <- fread(file.path(base_path,file_names[sample_name])) %>% tibble::column_to_rownames("V1") %>% as.matrix 
+            obj <- CreateSeuratObject(mat,project=sample_name)
+            if (is.null(breast_obj)) {
+                breast_obj <- obj
+            } else {
+                breast_obj <- merge(breast_obj,obj)
+            }
+        }
+        obj_list <- SplitObject(breast_obj,split.by="orig.ident")
+        for (obj_name in names(obj_list)) {
+            obj_list[[obj_name]] <- NormalizeData(obj_list[[obj_name]]) %>% FindVariableFeatures
+        }
+
+        anchors <- FindIntegrationAnchors(obj_list)
+        breast_obj <- IntegrateData(anchors)
+        breast_obj <- ScaleData(breast_obj) %>% RunPCA(.,npcs=20) %>%
+        FindNeighbors %>% FindClusters(res=0.5) %>% RunUMAP(.,dims=1:20)
+
+        meta_data_df <- normal_breast_10x_obj@meta.data %>% 
+        mutate(cluster = case_when(
+        seurat_clusters %in% c(3,4) ~ "Luminal2",
+        seurat_clusters == 2 ~ "Luminal1.1",
+        seurat_clusters == 1 ~ "Luminal1.2",
+        seurat_clusters == 9 ~ "Basal",
+        seurat_clusters == 0 ~ "Myoepithelial",
+        TRUE ~ as.character(seurat_clusters))) 
+        normal_breast_10x_obj <- AddMetaData(normal_breast_10x_obj,meta_data_df)
+
+        DefaultAssay(normal_breast_10x_obj) <- "RNA"
+        DotPlot(normal_breast_10x_obj,features=c("APOE","TIMP1","ACTA2","TAGLN","SLPI","LTF","EPCAM","ANKRD30A","AGR2",
+                                         "VIM","ESAM")) + coord_flip()
+        saveRDS(breast_obj,obj_path)
+    } else {
+        breast_obj <- readRDS(obj_path)
+    }
+
+    return(breast_obj)
+}
+
+load_generic_cancer_data <- function(cancer_type) {
+    obj_path <- file.path(base_path,paste(cancer_type,"Seurat_Object.rds",sep="_"))
+    if (!file.exists(obj_path)) {
+        mat <- Read10X(file.path(base_path,"export",paste(cancer_type,"counts",sep="_")))
+        meta_data_df <- fread(file.path(base_path,paste(cancer_type,"metadata.csv.gz",sep="_"))) %>% tibble::column_to_rownames("Cell")
+        obj <- CreateSeuratObject(mat,project=cancer_type,meta.data=meta_data_df)
+        saveRDS(obj,obj_path)
+    }  else {
+        obj <- readRDS(obj_path)
+    }
+
+    return(obj)
+}
+
+load_breast_cancer_data <- function() {
+    return(load_generic_cancer_data("BC"))
+}
+
+load_prostate_data <- function() {
+    if (file.exists(file.path(base_path,"Prostate_Seurat_Object.rds")) ) {
+        seurat_obj <- readRDS( file.path(base_path,"Prostate_Seurat_Object.rds") ) 
+        return(seurat_obj)
+    } else {
+        meta_data_paths <- list.files(file.path(base_path,"prostate","SCP864","cluster"),full.names=T)
+        meta_data_dt <- data.table()
+        for (meta_data_path in meta_data_paths) {
+            if (!grepl("hsProst.*HP[0-9]*_tSNE.txt",meta_data_path))
+                next
+            
+            dt <- fread(meta_data_path)
+            columns <- c("NAME","fullTypePred","fullTypeTumorPred")
+
+            if (!"fullTypeTumorPred" %in% names(dt) && !"FullTypeTumorPred" %in% names(dt)) {
+                dt <- dt %>% mutate(fullTypeTumorPred=FullTypePred) %>% as.data.table
+            }
+            
+            if ("FullTypePred" %in% names(dt)) {
+                dt <- dplyr::rename(dt,fullTypePred=FullTypePred) %>% as.data.table
+            } 
+            
+            if ("FullTypeTumorPred" %in% names(dt)) {
+                dt <- dplyr::rename(dt,fullTypeTumorPred=FullTypeTumorPred) %>% as.data.table
+            }
+            meta_data_dt <- rbind(meta_data_dt,dt[2:nrow(dt),columns,with=F])
+        }
+
+        gene_exp_mat <- readMM(file.path(base_path,"prostate","SCP864","expression","5e9d1ad7771a5b0f0fbe2c84",
+                                      "matrix.mtx.gz"))
+        genes <- fread(file.path(base_path,"prostate","SCP864","expression","5e9d1ad7771a5b0f0fbe2c84",
+                                 "matrix.genes.tsv.gz"),header=F)$V2
+        barcodes <- fread(file.path(base_path,"prostate","SCP864","expression","5e9d1ad7771a5b0f0fbe2c84",
+                                      "matrix.bc.ext.tsv.gz"),header=F)$V1
+
+        rownames(gene_exp_mat) <- genes
+        colnames(gene_exp_mat) <- barcodes
+
+        seurat_obj <- CreateSeuratObject(gene_exp_mat[,meta_data_dt$NAME],
+                                        meta.data=tibble::column_to_rownames(meta_data_dt,"NAME"))
+
+        saveRDS(seurat_obj,file.path(base_path,"Prostate_Seurat_Object.rds"))
+        return(seurat_obj)
+    }
+}
+
+load_colon_data <- function() {
+    if (!file.exists(file.path(base_path,"Colon_Seurat_Object.rds"))) {
+        colon_mtx <- readMM(file.path(base_path,"gene_sorted-Epi.matrix.mtx"))
+        genes <- fread(file.path(base_path,"Epi.genes.tsv"),header=F)$V1
+        cell_names <- fread(file.path(base_path,"Epi.barcodes2.tsv"),header=F)$V1
+        meta_data_dt <- fread(file.path(base_path,"all.meta2.txt"))
+        meta_data_df <- meta_data_dt[2:nrow(meta_data_dt),] %>% tibble::column_to_rownames("NAME")
+        rownames(colon_mtx) <- genes
+        colnames(colon_mtx) <- cell_names
+        colon_obj <- CreateSeuratObject(colon_mtx,meta.data=meta_data_df[cell_names,],project = "Normal")
+        saveRDS(colon_obj,file.path(base_path,"Colon_Seurat_Object.rds"))
+    } else {
+        colon_obj <- readRDS(file.path(base_path,"Colon_Seurat_Object.rds"))
+    }
+
+    return(colon_obj)
+}
+
+get_orthologs <- function(gene_names,from_species,to_species) {
+    mart_mouse = useMart("ensembl", dataset="mmusculus_gene_ensembl",verbose=F,host="uswest.ensembl.org") 
+    mart_human = useMart("ensembl", dataset="hsapiens_gene_ensembl",verbose=F,host="uswest.ensembl.org")
+
+    if (from_species == "mouse") {
+        from_mart <- mart_mouse
+        to_mart <- mart_human
+    } else {
+        from_mart <- mart_human
+        to_mart <- mart_mouse
+    }
+    
+    ortholog_dt <- getLDS(attributes=c("external_gene_name"),
+            filters="external_gene_name", values=gene_names, mart=from_mart,
+            attributesL=c("external_gene_name"), martL=to_mart, verbose=F) %>% data.table(.) %>%
+     setnames(.,"Gene.name.1",paste(to_species,"gene_name",sep="_")) %>% 
+    setnames(.,"Gene.name",paste(from_species,"gene_name",sep="_"))
+    
+    return(ortholog_dt)
+}
+
+compute_AUCell_scores <-
+function(seurat_obj=NULL,gene_sets=NULL,compute_thresholds=T,threshold_type="Global_k1",rankings_obj=NULL,nCores=6) {
+    gene_set_names <- names(gene_sets)
+    to_return <- list()
+    if (!is.null(rankings_obj)) {
+        cells_rankings <- rankings_obj
+    } else {
+        cells_rankings <- AUCell_buildRankings(seurat_obj[["RNA"]]@counts, nCores=nCores, plotStats=F,verbose=F)
+        to_return$rankings <- cells_rankings
+    }
+    cells_AUC <- AUCell_calcAUC(gene_sets, cells_rankings,verbose=F)
+    aucell_scores_mat <- t(getAUC(cells_AUC))
+    to_return[["auc_mat"]] =aucell_scores_mat
+
+    if (compute_thresholds == T) {
+        cells_assignment <- AUCell_exploreThresholds(cells_AUC, plotHist=F )
+        auc_thr <- sapply(cells_assignment, function(x){return(x$aucThr$thresholds[threshold_type,"threshold"])})
+        to_return[["thresholds"]] <- auc_thr
+    }       
+        
+    return(to_return)
+}
+
+compute_shuffled_gene_set_AUCell_scores <- function(seurat_obj_,gene_sets,sample_info_column="orig.ident",do_sample_wise=T, num_controls=100, num_bins=10,
+q_thresh=1.0,nCores=3 ) {
+    control_sd_df <- data.frame()
+    rankings_obj_list <- list()
+    control_gene_set_list <- list() 
+
+    samples <- unique(seurat_obj_@meta.data[[sample_info_column]])
+    for (control in 1:num_controls) {
+        print(control)
+
+        if (do_sample_wise) {
+            sd_df <- data.frame()
+            for (sample_name in samples) {
+                print(sample_name)
+                flush.console()
+                cells <- rownames(seurat_obj_@meta.data %>% dplyr::filter(!!sym(sample_info_column) == sample_name))
+                if (!sample_name %in% names(control_gene_set_list)) {
+                    control_gene_set_list[[sample_name]] <- find_control_gene_sets(seurat_obj_[,cells],gene_sets)
+                }
+
+                if (control == 1) {
+                    auc_output <- compute_AUCell_scores(seurat_obj_[,cells],
+                                                        compute_thresholds = F,
+                                                        control_gene_set_list[[sample_name]],rankings_obj=NULL,
+                                                        nCores=nCores )
+                    rankings_obj_list[[sample_name]] <- auc_output$rankings
+                } else {
+                    auc_output <- compute_AUCell_scores(rankings_obj=rankings_obj_list[[sample_name]],
+                                                        compute_thresholds =
+                                                        F,gene_sets=control_gene_set_list[[sample_name]],
+                                                        nCores=nCores)
+
+                }
+
+                temp_df <- apply(as.matrix(auc_output$auc_mat[cells,]),2,sd) %>%
+                tibble::enframe(.,name="gene_set",value="stdev") %>%
+                mutate(shuffle=control,sample=sample_name,mean=apply(as.matrix(auc_output$auc_mat[cells,]),2,
+                function(x){return(quantile(x,q_thresh))}))
+                sd_df <- rbind(sd_df,temp_df)
+            }
+        } else {
+                sd_df <- apply(as.matrix(auc_output$auc_mat[cells,]),2,sd) %>%
+                tibble::enframe(.,name="gene_set",value="stdev",mean=apply(as.matrix(auc_output$auc_mat[cells,]),2, 
+                function(x){return(quantile(x,q_thresh))})) %>%
+                mutate(shuffle=control)
+        }
+        control_sd_df <- rbind(control_sd_df,sd_df)
+    }
+
+    return(control_sd_df)
+}
+
+find_control_gene_sets <- function(seurat_obj,gene_sets,num_bins=10,genes_to_remove=NULL) {
+    mean_gene_exp_vec <- rowMeans(seurat_obj[["RNA"]]@data > 0)
+    gene_exp_df <- tibble::enframe(mean_gene_exp_vec,name="gene",value="gene_exp") %>% mutate(bin=ntile(gene_exp,num_bins))
+    genes_by_bin <- list()
+
+    for (exp_bin in 1:num_bins) {
+        genes_by_bin[[exp_bin]] <- gene_exp_df %>% dplyr::filter(bin == exp_bin) %>% pull(gene)
+        if (!is.null(genes_to_remove)) {
+            genes_by_bin[[exp_bin]] <- setdiff(genes_by_bin[[exp_bin]],genes_to_remove)
+        }
+    }
+
+    control_gene_sets <- list()
+    for (gene_set_name in names(gene_sets)) {
+        gene_set <- gene_sets[[gene_set_name]]
+        control_genes <- c()
+        bin_dist_df <- gene_exp_df %>% dplyr::filter(gene %in% gene_set) %>% group_by(bin) %>% dplyr::count()
+        for (idx in 1:nrow(bin_dist_df)) {
+            bin_num <- bin_dist_df[idx,] %>% pull(bin)
+            num_genes <- bin_dist_df[idx,] %>% pull(n)
+            control_genes <- c(control_genes,sample(genes_by_bin[[bin_num]],size=num_genes))
+        }
+        control_gene_sets[[paste(gene_set_name,"Control",sep="_")]] <- control_genes
+    }
+
+    return(control_gene_sets)
+}
+
+create_fast_resampled_seurat_obj <- function( count_mat, feature_counts_to_subsample, feature_counts_reference, feature_to_subsample ) {
+    cell_names_reference <- names(feature_counts_reference)
+    num_cells_to_subsample <- length(feature_counts_to_subsample)
+    if (num_cells_to_subsample < length(feature_counts_reference)) {
+        #target_feature_counts <- sort( sample(feature_counts_reference,size=num_cells_to_subsample), decreasing=TRUE )
+        target_feature_counts <- sample(feature_counts_reference,size=num_cells_to_subsample)
+    } else {
+        #target_feature_counts <- sort( sample(feature_counts_reference,size=num_cells_to_subsample,replace=T), decreasing=TRUE )
+        target_feature_counts <- sample(feature_counts_reference,size=num_cells_to_subsample,replace=T)
+    }
+    feature_counts_to_subsample <- sample(feature_counts_to_subsample) #sort(feature_counts_to_subsample,decreasing=TRUE)
+
+    count_mat <- as.matrix(count_mat)
+    all_cell_names <- colnames(count_mat)
+
+    cell_num <- 1
+    all_genes <- rownames(count_mat)
+
+    cell_names_to_subsample <- names(feature_counts_to_subsample)
+    gene_frequencies <- rowMeans(count_mat[,cell_names_to_subsample])
+    num_skipped <- 0
+    for (cell_name in cell_names_to_subsample) {
+        subsampled_feature_count <- target_feature_counts[cell_num]
+        if (feature_to_subsample == "genes") {
+            genes_expressed_in_cell <- all_genes[count_mat[,cell_name]>0]
+            if (subsampled_feature_count > feature_counts_to_subsample[cell_num]) {
+                next
+            }
+            adjusted_gene_frequencies <- gene_frequencies[genes_expressed_in_cell]/sum(gene_frequencies[genes_expressed_in_cell])
+            genes_to_keep <- sample( genes_expressed_in_cell, size=subsampled_feature_count, prob=adjusted_gene_frequencies)
+            genes_to_remove <- all_genes[!all_genes %in% genes_to_keep]
+            count_mat[!all_genes %in% genes_to_keep,cell_name] <- 0
+        } else if (feature_to_subsample == "reads") {
+            if (subsampled_feature_count < feature_counts_to_subsample[cell_name]) {
+                resampled_cell <- rmvhyper( 1, count_mat[,cell_name], subsampled_feature_count )
+                count_mat[,cell_name] <- resampled_cell
+            }
+        }
+        print(cell_num)
+        flush.console()
+        cell_num <- cell_num + 1
+    }
+    colnames(count_mat) <- all_cell_names
+
+    resampled_seurat_obj <- CreateSeuratObject( count_mat )
+
+    return(resampled_seurat_obj)
+}
+
+process_GSE106550 <- function(mouse_edge_gene_set) {
+   file_paths <- c("Control_1"=file.path(base_path,"SRR6260455","quant.sf"),
+               "Treated_1"=file.path(base_path,"SRR6260456","quant.sf"),
+               "Treated_2"=file.path(base_path,"SRR6260457","quant.sf"))
+    mat <- tximport(file_paths,tx2gene=df,ignoreTxVersion=T,ignoreAfterBar=T,importer=fread,
+                   abundanceCol="TPM",countsCol="NumReads",lengthCol="Length",
+                   txIdCol="Name")
+
+    sample_info_df <- data.frame(sample_name=names(file_paths)) %>% 
+    mutate(treatment=factor(gsub("_.*","",sample_name),
+                            levels=c("Control","Treated")),replicate=gsub(".*?_","",sample_name)) %>%
+    tibble::column_to_rownames("sample_name")
+    deseq_obj <- DESeqDataSetFromTximport(mat,colData=sample_info_df,design=~treatment) %>% DESeq
+
+    gene_name_dt <- fread(file.path(base_path,"GRCm38.gene_names.tsv"))# %>% dplyr::select(`Gene stable ID`,gene_name=`Gene name`)
+    deseq_res_df <- as.data.frame(results(deseq_obj)) %>% tibble::rownames_to_column("Gene stable ID") %>%
+    merge(.,gene_name_dt,by="Gene stable ID") %>% dplyr::select(-`Gene stable ID`) %>%
+    mutate(gene_type=ifelse(`Gene name` %in% mouse_edge_gene_set$edge,"Edge","Rest of Genome"),
+accession="GSE106550") %>%
+dplyr::select(gene_name=`Gene name`,gene_type,log2FoldChange,accession) %>% mutate(comparison="Treated-1d")
+    return(deseq_res_df)
+}
+
+process_GSE102675 <- function(mouse_edge_gene_set) {
+    untar(file.path(base_path,"GSE102675_RAW.tar"))
+    samples <- list("Control_1"="GSM2742739_4_hr_KO_Sal_S1.counts.txt.gz",
+                 "Control_2"="GSM2742740_4_hr_KO_Sal_K4.counts.txt.gz",
+                 "Control_3"="GSM2742741_4_hr_KO_Sal_Q1.counts.txt.gz",
+                 "Control_4"="GSM2742733_4_hr_WT_Sal_W1.counts.txt.gz",
+                 "Control_5"="GSM2742734_4_hr_WT_Sal_K5.counts.txt.gz",
+                 "Treated_1"="GSM2742736_4_hr_WT_CIP_O1.counts.txt.gz",
+                 "Treated_2"="GSM2742737_4_hr_WT_CIP_O3.counts.txt.gz",
+                 "Treated_3"="GSM2742738_4_hr_WT_CIP_N3.counts.txt.gz")
+    merged_dt <- data.frame()
+    for (sample_name in names(samples)) {
+        dt <- fread(samples[[sample_name]]) %>% dplyr::rename(gene_name=V1) %>% dplyr::rename(!!sample_name:=V2)
+        if (nrow(merged_dt) == 0) {
+            merged_dt <- dt
+        } else {
+            merged_dt <- merge(merged_dt,dt,by="gene_name")
+        }
+    }
+    mat <- tibble::column_to_rownames(merged_dt,"gene_name") %>% as.matrix
+    sample_info_df <- data.frame(sample_name=names(samples)) %>% mutate(sample_type=gsub("_.*","",sample_name)) %>%
+    tibble::column_to_rownames("sample_name") %>% mutate(sample_type=factor(sample_type,levels=c("Control","Treated")))
+
+    deseq_obj <- DESeqDataSetFromMatrix(mat,colData=sample_info_df,design=~sample_type) %>% DESeq
+    deseq_res <- results(deseq_obj)
+    gene_name_dt <- fread(file.path(base_path,"GRCm38.gene_names.tsv"))# %>% dplyr::select(`Gene stable ID`,gene_name=`Gene name`)
+    deseq_res_df <- as.data.frame(deseq_res) %>% tibble::rownames_to_column("Gene stable ID") %>%
+    merge(.,gene_name_dt,by="Gene stable ID") %>% dplyr::select(-`Gene stable ID`) %>%
+    mutate(gene_type=ifelse(`Gene name` %in% mouse_edge_gene_set$edge,"Edge","Rest of Genome"), 
+accession="GSE102675",comparison="Treated-4h") %>%
+dplyr::select(gene_name=`Gene name`,gene_type,log2FoldChange,accession,comparison)
+
+    return(deseq_res_df)
+}
+
+process_GSE143749 <- function(mouse_edge_gene_set) {
+    temp <- fread(file.path(base_path,"GSE143749_Differential_Expression_T_vs_NT.tsv.gz")) %>%
+    dplyr::rename(gene_name=V1) %>% mutate(gene_type=ifelse(gene_name %in% mouse_edge_gene_set$edge,
+                                                            "Edge","Rest of Genome"),
+                                          accession="GSE143749",fc=log2(fc)) %>%
+    dplyr::select(log2FoldChange=fc,gene_name,gene_type,accession) %>% mutate(comparison="Treated-20d")
+    return(temp)
+}
+
+process_GSE84659 <- function(mouse_edge_gene_set) {
+    sample_info_df <- c("Big104"="Treated-24h","Big113"="Control","Big17"="Control","Big18"="Treated-24h",
+                     "Big278"="Treated-24h","Big3"="Control","Big408"="Treated-8h","Big410"="Treated-8h",
+                     "Big416"="Treated-8h","Big454"="Treated-48h","Big465"="Treated-48h","Big470"="Treated-48h") %>%
+    tibble::enframe(name="sample_name",value="sample_type") %>% 
+    mutate(time=factor(gsub(".*?-","",sample_type),levels=c("Control","8h","24h","48h")))
+    temp <- fread(file.path(base_path,"GSE84659_RNAseq_normalized_expression.txt.gz"))
+
+    mat <- dplyr::select(temp,c(genename,all_of(sample_info_df$sample_name))) %>% group_by(genename) %>%
+    summarize_at(all_of(sample_info_df$sample_name),sum) %>% 
+    mutate_at(all_of(sample_info_df$sample_name),round) %>% ungroup %>% tibble::column_to_rownames("genename") %>% as.matrix
+
+    deseq_obj <- DESeqDataSetFromMatrix(mat,colData=sample_info_df,design=~time) %>% DESeq
+    comparisons <- list("8h-Control"=c("time","8h","Control"),
+                       "24h-Control"=c("time","24h","Control"),
+                       "48h-Control"=c("time","48h","Control"))
+    merged_de_seq_df <- data.frame()
+    for (comparison in names(comparisons)) {
+        de_seq_res <- results(deseq_obj,contrast=comparisons[[comparison]])
+        as.data.frame(de_seq_res) %>% tibble::rownames_to_column("gene_name") %>% 
+    mutate(gene_type=ifelse(gene_name %in% toupper(mouse_edge_gene_set$edge),"Edge","Rest of Genome")) %>% 
+        na.omit %>% mutate(comparison=comparison) -> de_seq_df
+        merged_de_seq_df <- rbind(merged_de_seq_df,de_seq_df)
+    }
+
+    merged_de_seq_df <- dplyr::select(merged_de_seq_df,log2FoldChange,gene_name,gene_type,comparison) %>% mutate(accession="GSE84659")
+
+    return(merged_de_seq_df)
+}
+
+process_GSE132330 <- function(mouse_edge_gene_set) {
+    merged_df <- data.frame()
+    for (sheet in sheets) {
+        sheets <- excel_sheets(path = file.path(base_path,"41586_2020_3147_MOESM7_ESM.xlsx"))
+        df <- readxl::read_excel(file.path(base_path,"41586_2020_3147_MOESM7_ESM.xlsx"),sheet=sheet) %>%
+        mutate(comparison=sheet,gene_type=ifelse(Gene_name %in% mouse_edge_gene_set$edge,"Edge","Rest of Genome"),
+              accession="GSE132330")
+        merged_df <- rbind(merged_df,df %>% dplyr::select(gene_name=Gene_name,comparison,log2FoldChange,accession,gene_type))
+    }
+
+    return(merged_df)
 }
